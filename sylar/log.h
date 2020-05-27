@@ -5,7 +5,8 @@
 #include <stdint.h>
 #include <memory>
 #include <list>
-#include <strstream> //stringstream
+#include <vector>
+#include <sstream> //stringstream
 #include <fstream>
 #include <iostream>
 
@@ -17,13 +18,20 @@ namespace sylar
 	public:
 		typedef std::shared_ptr<LogEvent> ptr;
 		LogEvent();
+		const char *getFile() const { return m_file; }
+		int32_t getLine() const { return m_line; }
+		uint32_t getElapse() const { return m_elapse; }
+		uint32_t getThreadId() const { return m_threadId; }
+		uint32_t getFiberId() const { return m_fiberId; }
+		uint32_t getTime() const { return m_time; }
+		const std::string &getContent() const { return m_cotent; }
 
 	private:
 		const char *m_file = nullptr; // 文件名
 		int32_t m_line = 0;			  // 行号
 		uint32_t m_elapse = 0;		  // 程序启动到现在的毫秒数
 		uint32_t m_threadId = 0;	  // 线程ID
-		uint32_t n_fiberId = 0;		  // 协程ID
+		uint32_t m_fiberId = 0;		  // 协程ID
 		uint32_t m_time;			  // 时间戳
 		std::string m_cotent;		  // 消息
 	};
@@ -39,6 +47,8 @@ namespace sylar
 			ERROR = 4,
 			FATAL = 5, // 致命
 		};
+
+		static const char *ToString(LogLevel::Level level);
 	};
 
 	// 日志格式器
@@ -46,10 +56,23 @@ namespace sylar
 	{
 	public:
 		typedef std::shared_ptr<LogFormatter> ptr;
+		LogFormatter(const std::string &pattern);
 
-		std::string format(LogEvent::ptr event);
+		std::string format(LogLevel::Level level, LogEvent::ptr event);
+
+		class FormatItem
+		{
+		public:
+			typedef std::shared_ptr<FormatItem> ptr;
+			virtual ~FormatItem() {}
+			virtual void format(std::ostream &os, LogLevel::Level level, LogEvent::ptr event) = 0;
+		};
+
+		void init();
 
 	private:
+		std::string m_pattern;
+		std::vector<FormatItem::ptr> m_items;
 	};
 
 	// 日志输出地(文件输出)
