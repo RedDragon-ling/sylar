@@ -1,4 +1,6 @@
 #include "log.h"
+#include <map>
+#include <functional>
 
 namespace sylar
 {
@@ -11,8 +13,8 @@ namespace sylar
     case LogLevel::name: \
         return #name;    \
         break;
-            XX(DEBUG);
-            XX(INFO);
+            XX(DEBUG); // 替换为case LogLevel::DEBUG: return "DEBUG";break;
+            XX(INFO);  // 同理
             XX(WARN);
             XX(ERROR);
             XX(FATAL);
@@ -47,7 +49,7 @@ namespace sylar
         {
             for (auto &i : m_appenders)
             {
-                i->log(level, event);
+                i->log(std::shared_ptr<Logger>(this), level, event);
             }
         }
     }
@@ -73,10 +75,10 @@ namespace sylar
     };
 
     // FileLogAppender的实现
-    void FileLogAppender::log(LogLevel::Level level, LogEvent::ptr event)
+    void FileLogAppender::log(std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event)
     {
         if (level >= m_level)
-            m_filestream << m_formatter->format(level, event);
+            m_filestream << m_formatter->format(ptr, level, event);
     }
 
     bool FileLogAppender::reopen()
@@ -87,28 +89,29 @@ namespace sylar
         return !m_filestream;
     }
     // StdoutLogAppender的实现
-    void StdoutLogAppender::log(LogLevel::Level level, LogEvent::ptr event)
+    void StdoutLogAppender::log(std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event)
     {
         if (level >= m_level)
-            std::cout << m_formatter->format(level, event);
+            std::cout << m_formatter->format(ptr, level, event);
     };
 
     LogFormatter::LogFormatter(const std::string &pattern)
         : m_pattern(pattern)
     {
     }
-    std::string LogFormatter::format(LogLevel::Level level, LogEvent::ptr event)
+    std::string LogFormatter::format(std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event)
     {
         std::stringstream ss; //没见过
         for (auto &i : m_items)
         {
-            i->format(ss, level, event);
+            i->format(ss, ptr, level, event);
         }
         return ss.str();
     }
 
-    void LogFormatter::init() // 没这个函数
+    void LogFormatter::init()
     {
+        // tuple是元组，可以存不同的数据类型
         std::vector<std::tuple<std::string, std::string, int>> vec;
         size_t last_pos = 0;
         std::string nstr;
@@ -182,38 +185,145 @@ namespace sylar
         if (!nstr.empty())
             vec.push_back(std::make_tuple(nstr, "", 0));
 
-        // %m -- 消息体
-        // %p -- level
-        // %r -- 启动后的时间
-        // %c -- 日志名称
-        // %t -- 线程id
-        // %n -- 回车换行
-        // %d -- 时间
-        // %f -- 文件名
-        // %l -- 行号
-    }
+        static std::map<std::string, std::function<FormatItem::ptr(const std::string &str)>> s_format_items =
+        {
+#define XX(str, C) \
+    {#str, [](const std::string &fmt) { return FormatItem::ptr(new C(fmt)); }
 
+            XX(m, MessageFormatItem),    // %m -- 消息体
+            XX(p, LevelFormatItem),      // %p -- level
+            XX(r, ElapseFormatItem),     // %r -- 启动后的时间
+            XX(c, LoggerNameFormatItem), // %c -- 日志名
+            XX(t, ThreadIdFormatItem),   // %t -- 线程id
+            XX(n, NewLineFormatItem),    // %n -- 回车换行
+            XX(d, DateTimeFormatItem),   // %d -- 时间
+            XX(f, FileNameFormatItem),   // %f -- 文件名
+            XX(l, LineFormatItem)        // %l -- 行号
+#undef XX
+        };
+
+        for (auto &i : vec)
+        {
+            if (std::get<2>(i) == 0) //get<2>(i)就是读tuple的第2个数据
+                m_items.push_back(FormatItem::ptr(new StringFormatItem(std::get<0>(i))));
+            else
+            {
+                auto it = s_format_items.find(std::get<0>(i));
+                if (it == s_format_items.end())
+                    m_items.push_back(FormatItem::ptr(new StringFormatItem("<<error_format %" + std::get<0>(i) + ">>")));
+                else
+                    m_items.push_back(it->second(std::get<1>(i)));
+            }
+            std::cout << std::get<0>(i) << " - " << std::get<1>(i) << " - " << std::get<2>(i) << std::endl;
+        }
+    };
+    // 日志描述
     class MessageFormatItem : public LogFormatter::FormatItem
     {
     public:
-        virtual void format(std::ostream &os, LogLevel::Level level, LogEvent::ptr event) override
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
         {
             os << event->getContent();
         }
     };
-
+    // 日志级别
     class LevelFormatItem : public LogFormatter::FormatItem
     {
     public:
-        virtual void format(std::ostream &os, LogLevel::Level level, LogEvent::ptr event) override
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
         {
             os << LogLevel::ToString(level);
         }
     };
-    const char *m_file = nullptr; // 文件名
-    int32_t m_line = 0;           // 行号
-    uint32_t m_elapse = 0;        // 程序启动到现在的毫秒数
-    uint32_t m_threadId = 0;      // 线程ID
-    uint32_t m_fiberId = 0;       // 协程ID
-    uint32_t m_time;              // 时间戳
+    // 日志启动时间（ms）
+    class ElapseFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << event->getElapse();
+        }
+    };
+    // 日志名
+    class LoggerNameFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << ptr->getName();
+        }
+    };
+    // 线程ID
+    class ThreadIdFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << event->getThreadId();
+        }
+    };
+    // 协程ID
+    class FiberIdFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << event->getFiberId();
+        }
+    };
+    // 日期时间
+    class DateTimeFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        DateTimeFormatItem(const std::string &format = "%Y:%m:%d %H:%M:%S")
+            : m_format(format) {}
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << event->getTime();
+        }
+
+    private:
+        std::string m_format; // 时间的格式
+    };
+    // 文件名
+    class FileNameFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << event->getFile();
+        }
+    };
+    // 行号
+    class LineFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << event->getLine();
+        }
+    };
+    // 换行
+    class NewLineFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << std::endl;
+        }
+    };
+    //
+    class StringFormatItem : public LogFormatter::FormatItem
+    {
+    public:
+        StringFormatItem(const std::string &str)
+            : LogFormatter::FormatItem(str), m_string(str) {}
+        virtual void format(std::ostream &os, std::shared_ptr<Logger> ptr, LogLevel::Level level, LogEvent::ptr event) override
+        {
+            os << m_string;
+        }
+
+    private:
+        std::string m_string;
+    };
 } // namespace sylar
